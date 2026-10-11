@@ -1,6 +1,7 @@
 :- use_module(library(random)).
 
 :- dynamic testList/2.
+:- dynamic runTime/4.
 
 % randomList(N, List) relates N to a list of N random integers in [0, 1000).
 randomList(0, []).
@@ -67,6 +68,16 @@ insertionSort([], []).
 insertionSort([H|T], SORTED) :-
     insertionSort(T, T1),
     insert(H, T1, SORTED).
+
+% insertionSortAcc uses an accumulator so each recursive call is the last goal.
+insertionSortAcc(L, Sorted) :-
+    insSort(L, [], Sorted).
+
+% insSort(Unsorted, SortedPrefix, Sorted) inserts each next item into its prefix.
+insSort([], Sorted, Sorted).
+insSort([H|T], SortedAcc, Sorted) :-
+    insert(H, SortedAcc, NextAcc),
+    insSort(T, NextAcc, Sorted).
 
 % mergeSort sorts two halves recursively and merges their ordered results.
 mergeSort([], []).             % the empty list is sorted
@@ -143,3 +154,67 @@ hybridBig(quickSort, [H|T], SMALLALG, THRESHOLD, SLIST) :-
     hybridSort(BIG, SMALLALG, quickSort, THRESHOLD, B),
     append(S, [H|B], SLIST).
 
+% sortWith(Name, Input, Output, Threshold) selects one of the timed algorithms.
+sortWith(bubbleSort, L, S, _) :- bubbleSort(L, S).
+sortWith(insertionSort, L, S, _) :- insertionSort(L, S).
+sortWith(insertionSortAcc, L, S, _) :- insertionSortAcc(L, S).
+sortWith(mergeSort, L, S, _) :- mergeSort(L, S).
+sortWith(quickSort, L, S, _) :- quickSort(L, S).
+sortWith(hybrid_bubble_merge, L, S, T) :- hybridSort(L, bubbleSort, mergeSort, T, S).
+sortWith(hybrid_bubble_quick, L, S, T) :- hybridSort(L, bubbleSort, quickSort, T, S).
+sortWith(hybrid_insertion_merge, L, S, T) :- hybridSort(L, insertionSort, mergeSort, T, S).
+sortWith(hybrid_insertion_quick, L, S, T) :- hybridSort(L, insertionSort, quickSort, T, S).
+
+% timedSort measures repeated calls until accumulated CPU time is at least 0.01s.
+timedSort(Name, L, Threshold, Seconds) :-
+    timedSort_(Name, L, Threshold, 1, 0.0, 0, Seconds).
+
+timedSort_(Name, L, Threshold, Repetitions, ElapsedAcc, RepetitionsAcc, Seconds) :-
+    statistics(cputime, T0),
+    forall(between(1, Repetitions, _), sortWith(Name, L, _, Threshold)),
+    statistics(cputime, T1),
+    BatchTime is T1 - T0,
+    Elapsed1 is ElapsedAcc + BatchTime,
+    Repetitions1 is RepetitionsAcc + Repetitions,
+    (   (Elapsed1 >= 0.01 ; Repetitions >= 1024)
+    ->  Seconds is Elapsed1 / Repetitions1
+    ;   NextRepetitions is Repetitions * 2,
+        timedSort_(Name, L, Threshold, NextRepetitions, Elapsed1, Repetitions1, Seconds)
+    ).
+
+% runAllTimings(Threshold) verifies and times all nine algorithms on every stored list.
+runAllTimings(Threshold) :-
+    integer(Threshold), Threshold > 0,
+    aggregate_all(count, testList(_, _), 50),
+    retractall(runTime(_, _, _, _)),
+    forall(testList(Id, L),
+           ( length(L, N),
+             forall(timedAlgorithm(Name), recordTiming(Id, Name, L, N, Threshold))
+           )).
+
+% Names for the five individual sorts and four hybrid configurations.
+timedAlgorithm(bubbleSort).
+timedAlgorithm(insertionSort).
+timedAlgorithm(insertionSortAcc).
+timedAlgorithm(mergeSort).
+timedAlgorithm(quickSort).
+timedAlgorithm(hybrid_bubble_merge).
+timedAlgorithm(hybrid_bubble_quick).
+timedAlgorithm(hybrid_insertion_merge).
+timedAlgorithm(hybrid_insertion_quick).
+
+% Check sortedness and permutation before measuring and recording each result.
+recordTiming(Id, Name, L, N, Threshold) :-
+    sortWith(Name, L, Sorted, Threshold),
+    ordered(Sorted),
+    msort(L, Sorted),
+    timedSort(Name, L, Threshold, Seconds),
+    assertz(runTime(Id, Name, N, Seconds)).
+
+% writeResultsCSV(File) writes all recorded runs as a portable CSV table.
+writeResultsCSV(File) :-
+    open(File, write, Stream),
+    format(Stream, 'list_id,algorithm,length,cpu_seconds~n', []),
+    forall(runTime(Id, Name, Length, Seconds),
+           format(Stream, '~d,~w,~d,~6f~n', [Id, Name, Length, Seconds])),
+    close(Stream).
